@@ -1,0 +1,568 @@
+package de.nikxs.digitalstrom.vdc;
+
+import de.nikxs.digitalstrom.vdc.server.Request;
+import de.nikxs.digitalstrom.vdc.server.Session;
+import de.nikxs.digitalstrom.vdc.server.handler.ServerChannelIdleHandler;
+import de.nikxs.digitalstrom.vdc.server.handler.VdcMessageDeserializer;
+import de.nikxs.digitalstrom.vdc.server.handler.VdcMessageHandler;
+import de.nikxs.digitalstrom.vdc.server.handler.VdcMessageSerializer;
+import de.nikxs.digitalstrom.vdc.server.transport.DSMessages;
+import de.nikxs.digitalstrom.vdc.util.DSUID;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.timeout.IdleStateHandler;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.util.Assert;
+import org.springframework.util.SocketUtils;
+import vdcapi.Messages;
+
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceInfo;
+import javax.validation.constraints.NotNull;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.HashMap;
+import java.util.concurrent.TimeUnit;
+
+import static de.nikxs.digitalstrom.vdc.util.DsUtil.buildGenericResponse;
+
+
+@Slf4j
+public class VdcHostOld implements DsAddressable {
+
+    private static final int SUPPORTED_API_VERSION = 3;
+    private static final int RESERVED_REQUEST_ID = 0;
+
+    private static final String DEFAUlT_PRODUCT_NAME = "jVdcHost";
+
+    private static final int TIMEOUT_ANNOUNCEMENT = 30; // timespan after an announcement is treated as failed
+
+    private int messageCounter = 0; //?!?!
+
+
+    /**
+     * dS specific unique ID of a vDC host instance
+     */
+    @Getter
+    private DsUID dSUID; // = DsUID.fromDSUID("C2638FB77D434047BA4F7C62EDDE1A3100");
+
+    /**
+     * human readable name of this dS entity
+     */
+    @Getter
+    private String name;
+
+    /**
+     * Port this VdcHost should listen to
+     */
+    private int port;
+
+    /**
+     * Netty start object
+     */
+    private ServerBootstrap bootstrap;
+
+    /**
+     * Thread, operating clients request
+     */
+    private EventLoopGroup acceptorGroup;
+
+    /**
+     * Thread running the application logic
+     */
+    private EventLoopGroup handlerGroup;
+
+    /**
+     * Channel used by this host to communicate with vdSM
+     */
+    private Channel cha_nnel;
+
+    /**
+     * Indicator whether vDC host is connected to a vdSM
+     */
+    private Session session;
+
+    /**
+     * Multi-cast DNS implementation for service (vDC Host) registration using Apple's Bonjour/ Zeroconf/ .
+     */
+    private JmDNS jmDNS;
+
+    /**
+     * Default Server configuration
+     */
+    private VdcHostConfig serverConfiguration = new VdcHostConfig();
+
+    /**
+     * Parameter is used by {@link IdleStateHandler} to check whether the channel
+     * has not been written or read for a long time, and shut down to save host resources.<br/>
+     *     
+     * Here...
+     *
+     * <pre>
+     * int readerIdleTimeSeconds,
+     * int writerIdleTimeSeconds,
+     * int allIdleTimeSeconds
+     * </pre>
+     *
+     * unit = seconds
+     */
+    private static final int IDLE_CHANNEL_TIMEOUT = 3600;
+
+    /**
+     * <code>true</code> if a connection to vdSM is established
+     */
+    @Getter
+    private boolean connected = false;
+
+    /**
+     * List of all dS devices managed by this host
+     */
+    private HashMap<DsUID, DsAddressable> dSEntities = new HashMap<>();
+
+    /**
+     * Cache which holds temporary all requests to the connected vdSM till the corresponding response is received
+     * and properly processed
+     */
+    private HashMap<Integer, Request> requestCache = new HashMap<>();
+
+    /**
+     * Creates a new instance of VdcHost using default settings defined in {@link VdcHostConfig}
+     */
+    public VdcHostOld(String name) throws IOException {
+        this(name, null, DsUID.generateV4(), SocketUtils.findAvailableTcpPort(50000));
+    }
+
+    /**
+     * Creates a new instance of VdcHost using default settings defined in {@link VdcHostConfig}
+     *
+     * @param dSUID
+     */
+    public VdcHostOld(String name, DsUID dSUID) throws IOException {
+        this(name, null, dSUID, SocketUtils.findAvailableTcpPort(50000));
+    }
+
+    /**
+     * Creates a new instance of VdcHost using default settings defined in {@link VdcHostConfig}
+     *
+     * @param port
+     */
+    public VdcHostOld(String name, DsUID dSUID, int port) throws IOException {
+        this(name,null, dSUID, port);
+    }
+
+    /**
+     * Creates a new instance of VdcHost using custom settings defined in serverConfig
+     *
+     * @param serverConfig
+     * @param port
+     */
+    public VdcHostOld(String name, VdcHostConfig serverConfig, DsUID dSUID, int port) throws IOException {
+        this.name = name != null ? name : "unknown";
+
+        // use default conf otherwise use specified one
+        if (serverConfig == null) {
+            serverConfig = this.serverConfiguration;
+        }
+
+        if(dSUID != null) {
+            this.dSUID = dSUID;
+        }
+
+        this.port = port;
+
+        bootstrap = new ServerBootstrap();
+        acceptorGroup = new NioEventLoopGroup();  // used to accept new sessions
+        handlerGroup = new NioEventLoopGroup();   // handle existing connections
+
+        bootstrap.channel(NioServerSocketChannel.class);
+        bootstrap.option(ChannelOption.SO_BACKLOG, serverConfig.getSoBacklog());
+
+        bootstrap.childOption(ChannelOption.SO_KEEPALIVE, serverConfig.isSoKeepalive());
+        bootstrap.childOption(ChannelOption.TCP_NODELAY, serverConfig.isTcpNodelay());
+        bootstrap.childOption(ChannelOption.SO_REUSEADDR, true);
+        bootstrap.childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
+        bootstrap.childOption(ChannelOption.SO_LINGER, serverConfig.getSoLinger());
+        bootstrap.childOption(ChannelOption.SO_RCVBUF, serverConfig.getSoRcvbuf());
+        bootstrap.childOption(ChannelOption.SO_SNDBUF, serverConfig.getSoSndbuf());
+
+        VdcMessageHandler messageHandler = new VdcMessageHandler(this);
+        ChannelInitializer<SocketChannel> initializer = new ChannelInitializer<SocketChannel>() {
+            @Override
+            protected void initChannel(SocketChannel ch) throws Exception {
+                ch.pipeline().addLast(
+                        "idlestate",
+                        new IdleStateHandler(IDLE_CHANNEL_TIMEOUT, IDLE_CHANNEL_TIMEOUT,
+                                IDLE_CHANNEL_TIMEOUT));
+                ch.pipeline().addLast("idle", new ServerChannelIdleHandler());
+                ch.pipeline().addLast("incoming", new VdcMessageDeserializer());
+                ch.pipeline().addLast("coreHandler", messageHandler);
+                ch.pipeline().addLast("outgoing", new VdcMessageSerializer());
+            }
+        };
+        bootstrap.group(acceptorGroup, handlerGroup).childHandler(initializer);
+
+        try {
+            log.info("Initializing JmDNS...");
+            jmDNS = JmDNS.create(InetAddress.getLocalHost());
+        } catch(IOException exp) {
+            log.error("Initialiazing JmDNS failed..." + exp.getMessage(), exp);
+            throw exp;
+        }
+
+        dSEntities.put(this.getDSUID(), this);
+
+        log.info("VdcHost init done");
+    }
+
+    @DependsOn("vdcServer")
+    public void collectDevices(int aCompletedCB, int aRescanFlags) {
+
+    };
+
+    /**
+     * Handle a incoming hello() request coming from vdSM.
+     *
+     * @param request incoming request
+     * @return hello() response
+     */
+    public Messages.Message processHello(Messages.Message request) {
+
+        if (!request.hasMessageId() || !request.hasVdsmRequestHello() || !request.getVdsmRequestHello().hasDSUID()) {
+            log.error("hello() -- No message ID!");
+            return buildGenericResponse(Messages.ResultCode.ERR_MISSING_DATA, request.getMessageId());
+        }
+
+        if (!request.getVdsmRequestHello().hasApiVersion() || request.getVdsmRequestHello().getApiVersion() > SUPPORTED_API_VERSION) {
+            log.error("hello() -- Missing or incompatible API version information");
+            return buildGenericResponse(Messages.ResultCode.ERR_INCOMPATIBLE_API, request.getMessageId());
+        }
+
+        if(!isConnected()) {
+            session = new Session(DsUID.fromDSUID(request.getVdsmRequestHello().getDSUID()));
+            log.info("hello() -- New connection to vdSM ({}) established", session.getVdSMdSUID());
+
+            return Messages.Message.newBuilder()
+                    .setType(Messages.Type.VDC_RESPONSE_HELLO)
+                    .setMessageId(request.getMessageId())
+                    .setVdcResponseHello(request.getVdcResponseHello().toBuilder().setDSUID(getDSUID().toString()).build())
+                    .build();
+        } else if (isConnected() && session.getVdSMdSUID().equals(DsUID.fromDSUID(request.getVdsmRequestHello().getDSUID()))) {
+            log.info("hello() -- vdSM ({}) request renewing the connection", request.getVdsmRequestHello().getDSUID());
+
+            //@ToDo: May be the reconnect signal should be forwarded to managed vdSDs
+
+            return Messages.Message.newBuilder()
+                    .setType(Messages.Type.VDC_RESPONSE_HELLO)
+                    .setMessageId(request.getMessageId())
+                    .setVdcResponseHello(request.getVdcResponseHello().toBuilder().setDSUID(getDSUID().toString()).build())
+                    .build();
+        } else {
+            log.error("hello() -- Already connected to another vdSM. Dropping this request");
+            return buildGenericResponse(Messages.ResultCode.ERR_SERVICE_NOT_AVAILABLE, request.getMessageId());
+        }
+    }
+
+    /**
+     * Handle a incoming ping() request coming from vdSM. If the requests dSUID belongs to this host, to a registered
+     * vDC or one of its managed vdSD the pong() method of the corresponding dS entity is implicitly called.
+     *
+     * @param request incoming request
+     * @return pong() response of the respective vdSD
+     */
+    public Messages.Message processPing(Messages.Message request) {
+        if(!request.hasVdsmSendPing() || request.getVdsmSendPing().hasDSUID()) {
+            log.warn("ping() -- Incomplete request. No payload or dSUID");
+            return null;
+        }
+
+        DsAddressable entity = findEntity(DsUID.fromDSUID(request.getVdsmSendPing().getDSUID()));
+        if (entity != null) {
+            log.debug("ping() -- delegate request to dS entity '{}' ({})", entity.getName(), entity.getDSUID());
+            return entity.pong(request);
+        } else {
+            log.warn("ping() -- Drop request. Unknown device ({})", request.getVdsmSendPing().getDSUID());
+            return null;
+        }
+    }
+
+    /**
+     * Handle incoming processBye() request. If the given dSUID belongs to this {@link VdcHostOld} the virtual
+     * vdSM session wil be terminated and all managed vDC becomes inactive
+     *
+     * @param request incoming request
+     * @return {@link Messages.GenericResponse} with "OK" code if the given dSUID belongs to a known vDC. Otherwise {@code null}
+     */
+    public Messages.Message processBye(Messages.Message request) {
+        if(!request.hasVdsmSendBye() || request.getVdsmSendBye().hasDSUID()) {
+            log.warn("bye() -- Incomplete request. No payload or dSUID");
+            return null;
+        }
+
+        if (isConnected() && session.getVdSMdSUID().equals(DsUID.fromDSUID(request.getVdsmSendBye().getDSUID()))) {
+            log.debug("bye() -- Invalidate session to vdSM ({})", request.getVdsmSendBye().getDSUID());
+            session.invalidate();
+
+            //bye() request might also be for interest to all vDCs
+            dSEntities.forEach((k, v)  -> v.bye(request));
+
+            return buildGenericResponse(Messages.ResultCode.ERR_OK, request.getMessageId());
+        } else {
+            log.warn("bye() -- Dropped vdSM request. Unknown dSUID ({})", request.getVdsmSendPing().getDSUID());
+            return null;
+        }
+    }
+
+    public Messages.Message processRemove(Messages.Message request) {
+        if(!request.hasVdsmSendRemove() || request.getVdsmSendRemove().hasDSUID()) {
+            log.warn("remove() -- Incomplete request. No payload or dSUID");
+            return null;
+        }
+        return null;
+    }
+
+    /**
+     * Send the given {@link Messages.Message } to connected vDSM
+     *
+     * @param message
+     */
+    public void send(Messages.Message message) {
+        if(isConnected() && message != null && message.isInitialized()) {
+            Request request = Request.builder().id(message.getMessageId()).build();
+            requestCache.put(request.id(), request);
+            log.debug("[request-id: {}] send () msg:", request.id(), message);
+            channel.writeAndFlush(new DSMessages(message.toByteArray()));
+        } else {
+            log.error("send() -- Host not connected to vdSM or message not properly initialized --> Do nothing");
+        }
+    }
+
+//    public void processGenericResponse(Messages.Message response) {
+//
+//        log.debug("genericResponse(): GENERIC_RESPONSE");
+//        if (!response.hasGenericResponse() || response.getGenericResponse().hasCode()) {
+//            log.error("genericResponse(): received message, but data is missing!");
+//            return;
+//        }
+//
+//        if (!resp.hasMessageId() || resp.getMessageId() == RESERVED_REQUEST_ID) {
+//            log.error("GENERIC_RESPONSE --> code [{}/{}] is not cached.",
+//                    resp.getGenericResponse().getCode(),
+//                    resp.getGenericResponse().getDescription());
+//
+//            return;
+//        }
+//
+//        //find chached request this response belongs to
+//
+//    }
+
+//    public Messages.Message bye(Messages.Message request) {
+//        if (request.hasVdsmSendBye()) {
+//            log.warn("[vdSM <== bye()] {} says bye", getName());
+//            return buildGenericResponse(Messages.ResultCode.ERR_OK, request.getMessageId());
+//        } else {
+//            log.warn("[vdSM ==> bye()] Incomplete vdSM request. No payload or dSUID");
+//            return null;
+//        }
+//    }
+
+//    protected Messages.Message handleError(Messages.ResultCode code, int messageId) {
+//        Messages.Message.Builder message = Messages.Message.newBuilder();
+//        message.setType(Messages.Type.GENERIC_RESPONSE);
+//
+//        Messages.GenericResponse.Builder genericResponse = Messages.GenericResponse.newBuilder();
+//        genericResponse.setCode(code);
+//
+//        switch (code) {
+//            case ERR_OK:
+//                genericResponse.setDescription("OK");
+//                break;
+//            case ERR_MESSAGE_UNKNOWN:
+//                genericResponse.setDescription("Unknown message type");
+//                break;
+//            case ERR_INCOMPATIBLE_API:
+//                genericResponse.setDescription("Incompatible or not given API version");
+//                break;
+//            case ERR_SERVICE_NOT_AVAILABLE:
+//                genericResponse.setDescription("Service not available");
+//                break;
+//            case ERR_INSUFFICIENT_STORAGE:
+//                genericResponse.setDescription("Insufficient storage");
+//                break;
+//            case ERR_FORBIDDEN:
+//                genericResponse.setDescription("Forbidden");
+//                break;
+//            case ERR_NOT_IMPLEMENTED:
+//                genericResponse.setDescription("Not implemented");
+//                break;
+//            case ERR_NO_CONTENT_FOR_ARRAY:
+//                genericResponse.setDescription("No content for array");
+//                break;
+//            case ERR_INVALID_VALUE_TYPE:
+//                genericResponse.setDescription("Invalid or unexpected value type");
+//                break;
+//            case ERR_MISSING_SUBMESSAGE:
+//                genericResponse.setDescription("Missing protocol submessage");
+//                break;
+//            case ERR_MISSING_DATA:
+//                genericResponse.setDescription("Missing data / empty message");
+//                break;
+//            case ERR_NOT_FOUND:
+//                genericResponse.setDescription("Requested entity was not found");
+//                break;
+//            case ERR_NOT_AUTHORIZED:
+//                genericResponse.setDescription("Not authorized to perform requested action");
+//                break;
+//            default:
+//                log.error("unhandled error code: {}", code.name());
+//        }
+//
+//        message.setGenericResponse(genericResponse.build());
+//        message.setMessageId(messageId);
+//
+//        return message.build();
+//    }
+
+//    private void ann_ounceVDC(Vdc vdc) {
+//        Messages.Message.Builder message = Messages.Message.newBuilder();
+//        message.setType(Messages.Type.VDC_SEND_ANNOUNCE_VDC);
+//        message.setMessageId(++messageCounter);
+//
+//        Vdcapi.vdc_SendAnnounceVdc announceVDC =
+//                message.getVdcSendAnnounceVdc().toBuilder().setDSUID(vdc.getDSUID().toString()).build();
+//        message.setVdcSendAnnounceVdc(announceVDC);
+//
+//        send(message.build());
+//    }
+
+    public void addVdc(@NotNull Vdc vDC) {
+        Assert.notNull(vDC, "vDC must not 'null'");
+        //put vDC as well as all of its managed dS devices into the overall dS entity map
+        dSEntities.put(vDC.getDSUID(), vDC);
+        vDC.getDevices().forEach(dSEntities::putIfAbsent);
+
+        if(isConnected()) {
+            //@todo: announce new vDC to connected vdSM
+            vDC.announce();
+            //announceVDC(vDC);
+        }
+    }
+
+    public DsAddressable findEntity(DsUID dsUID) {
+        return dSEntities.get(dsUID);
+    }
+
+    /**
+     * start VdcHost
+     */
+    public void start() throws InterruptedException, IOException {
+        log.info("VdcHost is about to start on port " + port);
+        try {
+            channel = bootstrap.bind(port).sync().channel();
+            registerHost();
+            waitUntilConnectionIsEstablished();
+
+            //announce all already known vDCs
+            log.info("start announcing vDC(s)");
+            dSEntities.entrySet()
+                    .stream()
+                    .filter(entity -> entity instanceof Vdc)
+                    .forEach(entity -> ((Vdc)entity).announce());
+        } catch (InterruptedException e) {
+            log.error("VdcHost failed to start, " + e.getMessage(), e);
+            throw e;
+        } catch (IOException e) {
+            log.error("VdcHost failed register service, " + e.getMessage(), e);
+            throw e;
+        }
+        log.info("VdcHost started");
+    }
+
+    public void initialize() {
+        log.info("\n*** starting initialisation of vcd host '{}'" +
+                 "\n*** dSUID (%s) = %s, MAC: %s, IP = %s\n", name);
+    }
+
+//    // Log start message
+//    LOG(LOG_NOTICE,
+//    "\n\n\n*** starting initialisation of vcd host '%s'\n*** dSUID (%s) = %s, MAC: %s, IP = %s\n",
+//        publishedDescription().c_str(),
+//    externalDsuid ? "external" : "MAC-derived",
+//    shortDesc().c_str(),
+//    macAddressToString(mac, ':').c_str(),
+//    ipv4ToString(getIpV4Address()).c_str()
+//  );
+//    // start the API server if API is enabled
+//  if (vdcApiServer) {
+//        vdcApiServer->setConnectionStatusHandler(boost::bind(&VdcHost::vdcApiConnectionStatusHandler, this, _1, _2));
+//        vdcApiServer->start();
+//    }
+//    // start initialisation of class containers
+//    initializeNextVdc(aCompletedCB, aFactoryReset, vdcs.begin());
+
+
+    /**
+     * shutdown VdcHost
+     */
+    public void shutdown() {
+        log.info("vDC host is going to shutdown...");
+        unregisterHost();
+
+        if (acceptorGroup != null) {
+            acceptorGroup.shutdownGracefully();
+        }
+        if (handlerGroup != null) {
+            handlerGroup.shutdownGracefully();
+        }
+    }
+
+    private void registerHost() throws IOException {
+        final String SERVICE_TYPE = "_ds-vdc._tcp.local.";
+        final String SERVICE_NAME = "digitalSTROM vDC host@" + jmDNS.getHostName().replace(".local.", "");
+        ServiceInfo serviceInfo = ServiceInfo.create(SERVICE_TYPE, SERVICE_NAME, this.port, "dSUID=" + this.dSUID);
+        log.info("Registering vDC Host via JmDNS: {}", serviceInfo);
+        jmDNS.registerService(serviceInfo);
+    }
+
+    /**
+     * Deregister this vDC Host
+     */
+    private void unregisterHost() {
+        if (jmDNS != null) {
+            log.info("Unregister vDC Host via JmDBS");
+            jmDNS.unregisterAllServices();
+        }
+    }
+
+    /**
+     *
+     * @throws InterruptedException
+     */
+    private void waitUntilConnectionIsEstablished() throws InterruptedException {
+        int waitingTime = 0;
+        while(!isConnected()) {
+            log.info("Waiting for vdSM sending 'hello()' for another 5 sec. ");
+            TimeUnit.SECONDS.sleep(1);
+            waitingTime=+1;
+        }
+        log.info("vdSM connection established after {} seconds", waitingTime);
+    }
+
+    public int nextSessionId() {
+        return ++messageCounter;
+    }
+
+    public boolean isConnected() {
+        return (channel != null && channel.isWritable() && session != null) ? session.isConnected() : false ;
+    }
+
+}

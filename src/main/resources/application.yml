@@ -1,0 +1,24 @@
+spring:
+  main:
+    web-environment: false
+    # LogStartupInfo: false
+    # banner-mode: off
+  output:
+    ansi:
+      enabled: ALWAYS
+
+logging:
+  level:
+    ROOT : WARN
+    de.nikxs.digitalstrom : DEBUG
+
+vdc:
+  name: whatever
+  spring-version: @spring.version@
+
+  server:
+    port: 50000
+
+  host:
+    dsuid: 6123A881016010000000F2CA0DEB370700
+    name: "custom_vDC-Host"
