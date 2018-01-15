@@ -75,16 +75,28 @@ public class VdcMessageHandler extends SimpleChannelInboundHandler<DSMessages> {
                     host.processGenericResponse(message);
                     break;
 
-//                case VDSM_REQUEST_GET_PROPERTY: doNothing();
-//                case VDC_RESPONSE_GET_PROPERTY: doNothing();
-//                case VDSM_REQUEST_SET_PROPERTY: doNothing();
-//                case VDSM_REQUEST_GENERIC_REQUEST: doNothing();
-//                case VDC_SEND_ANNOUNCE_DEVICE: doNothing();
+                case VDSM_REQUEST_GET_PROPERTY:
+                    log.debug("vdSM ==> send getProperty() ...");
+                    break;
+
+                case VDSM_REQUEST_SET_PROPERTY:
+                    log.debug("vdSM ==> send setProperty() ...");
+                    break;
+
+                case VDSM_REQUEST_GENERIC_REQUEST:
+                    log.warn("unsupported messageType {}", message.getType().toString());
+                    break;
+
+                default:
+                    log.warn("unsupported messageType {}", message.getType().toString());
+                    break;
+
+                    //                case VDC_SEND_ANNOUNCE_DEVICE: doNothing();
 //                case VDC_SEND_VANISH: doNothing();
 //                case VDC_SEND_PUSH_NOTIFICATION: doNothing();
-
-//
 //                case VDC_SEND_ANNOUNCE_VDC: doNothing();
+//                case VDC_SEND_IDENTIFY: doNothing();
+
 //                case VDSM_NOTIFICATION_CALL_SCENE: doNothing();
 //                case VDSM_NOTIFICATION_SAVE_SCENE: doNothing();
 //                case VDSM_NOTIFICATION_UNDO_SCENE: doNothing();
@@ -94,13 +106,7 @@ public class VdcMessageHandler extends SimpleChannelInboundHandler<DSMessages> {
 //                case VDSM_NOTIFICATION_SET_CONTROL_VALUE: doNothing();
 //                case VDSM_NOTIFICATION_DIM_CHANNEL: doNothing();
 //                case VDSM_NOTIFICATION_SET_OUTPUT_CHANNEL_VALUE: doNothing();
-//                case VDC_SEND_IDENTIFY: doNothing();
             }
-//        } catch (IOException e) {
-//            log.error(e.getMessage() + "/n" + e.toString());
-//            e.printStackTrace();
-//        }
-
 
             if (response != null) {
                 DSMessages out = new DSMessages(response.toByteArray());

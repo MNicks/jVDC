@@ -8,7 +8,7 @@ import vdcapi.Messages;
 import static org.slf4j.LoggerFactory.getLogger;
 
 
-public interface DsAddressable {
+public interface Addressable {
 
     //byte[] png16x16 = new byte[0];
 
@@ -51,13 +51,13 @@ public interface DsAddressable {
         }
     }
 
-    //void vanish(DsAddressable device);
+    //void vanish(Addressable device);
 }
 
 final class LogHolder { // not public
     static final Logger LOGGER;
 
     static {
-        LOGGER = getLogger(DsAddressable.class);
+        LOGGER = getLogger(Addressable.class);
     }
 }

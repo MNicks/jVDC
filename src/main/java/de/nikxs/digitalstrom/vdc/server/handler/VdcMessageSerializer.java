@@ -22,8 +22,7 @@ public class VdcMessageSerializer extends MessageToMessageEncoder<DSMessages> {
      *      Object, List)
      */
     @Override
-    protected void encode(ChannelHandlerContext ctx, DSMessages vdcMsg, List<Object> out)
-            throws Exception {
+    protected void encode(ChannelHandlerContext ctx, DSMessages vdcMsg, List<Object> out) {
         byte[] bodyBytes = ByteUtil.getNonEmptyBytes(vdcMsg.data());
 
         VdcHeader header = constructHeader(bodyBytes);

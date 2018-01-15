@@ -5,6 +5,7 @@ import de.nikxs.digitalstrom.vdc.server.Request;
 import de.nikxs.digitalstrom.vdc.server.Session;
 import de.nikxs.digitalstrom.vdc.server.VdcServer;
 import de.nikxs.digitalstrom.vdc.util.DSUID;
+import io.netty.channel.ChannelFuture;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -32,7 +33,7 @@ import static de.nikxs.digitalstrom.vdc.util.DsUtil.buildGenericResponse;
 @Slf4j
 @ToString(exclude="dSEntities")
 @Component
-public class VdcHost implements DsAddressable {
+public class VdcHost implements Addressable {
 
     private static final DSUID DEFAULT_HOST_DSUID = DSUID.fromDSUID("6123A881016010000000F2CA0DEB370700");
 
@@ -73,7 +74,7 @@ public class VdcHost implements DsAddressable {
     /**
      * List of all dS devices managed by this host
      */
-    private HashMap<DSUID, DsAddressable> dSEntities = new HashMap<>();
+    private HashMap<DSUID, Addressable> dSEntities = new HashMap<>();
 
     /**
      * Cache which holds temporary all requests to the connected vdSM till the corresponding response is received
@@ -102,11 +103,6 @@ public class VdcHost implements DsAddressable {
         }
         dSEntities.put(this.getDSUID(), this);
     }
-
-//    @DependsOn("vdcServer")
-//    public void collectDevices(int aCompletedCB, int aRescanFlags) {
-//
-//    };
 
     /**
      * Handle a incoming hello() request coming from vdSM.
@@ -164,7 +160,7 @@ public class VdcHost implements DsAddressable {
             return null;
         }
 
-        DsAddressable entity = findEntity(DSUID.fromDSUID(request.getVdsmSendPing().getDSUID()));
+        Addressable entity = getEntity(DSUID.fromDSUID(request.getVdsmSendPing().getDSUID()));
         if (entity != null) {
             log.debug("ping() -- delegate request to dS entity '{}' ({})", entity.getName(), entity.getDSUID());
             return entity.pong(request);
@@ -176,7 +172,8 @@ public class VdcHost implements DsAddressable {
 
     /**
      * Handle incoming processBye() request. If the given dSUID belongs to this {@link VdcHost} the virtual
-     * vdSM session wil be terminated and all managed vDC becomes inactive
+     * vdSM session wil be terminated and all managed vDC becomes inactive. The bye() request will also be
+     * forwarded to all known dS devices manged by this host
      *
      * @param request incoming request
      * @return {@link vdcapi.Messages.GenericResponse} with "OK" code if the given dSUID belongs to a known vDC. Otherwise {@code null}
@@ -273,7 +270,7 @@ public class VdcHost implements DsAddressable {
         }
     }
 
-    public DsAddressable findEntity(DSUID dsUID) {
+    public Addressable getEntity(DSUID dsUID) {
         return dSEntities.get(dsUID);
     }
 
@@ -286,7 +283,7 @@ public class VdcHost implements DsAddressable {
     }
 
     public boolean isConnected() {
-        return server.isConnected() && session != null ? session.isConnected() : false ;
+        return server.isConnected() && session != null ? session.isConnected() : false;
     }
 
     /**

@@ -10,19 +10,16 @@ import vdcapi.Vdcapi;
 import java.util.HashMap;
 
 @Slf4j
-public abstract class Vdc implements DsAddressable {
+public abstract class Vdc extends Entity {
 
-    /**
-     * Unique dS specific identifier
-     */
     @Getter
-    protected DSUID dSUID;
+    @Setter
+    private int zoneID;
 
-    /**
-     * Human readable name of this dS entity
-     */
     @Getter
-    private String name;
+    @Setter
+    private String capabilities;
+
 
     @Getter
     @Setter
@@ -31,20 +28,19 @@ public abstract class Vdc implements DsAddressable {
     /**
      * List of all dS devices managed by this vDC
      */
-    @Getter private HashMap<DSUID, DsAddressable> devices = new HashMap<>();
+    @Getter private HashMap<DSUID, Addressable> devices = new HashMap<>();
 
     /**
      * Reference to ProtocolBuffer server implementation used as communication layer to/from vdSM
      */
     @Getter @Setter private VdcHost host;
 
-    public Vdc(String name) {
-        this(name, DSUID.generateV4());
+    public Vdc(String model) {
+        this(DSUID.generateV4(), model);
     }
 
-    public Vdc(String name, DSUID dSUID) {
-        this.name = name;
-        this.dSUID = dSUID;
+    public Vdc(DSUID dSUID, String model) {
+        super(Type.VDC, dSUID, model);
     }
 
     /**
@@ -57,20 +53,20 @@ public abstract class Vdc implements DsAddressable {
                         .setMessageId(host.getMessageId());
 
         Vdcapi.vdc_SendAnnounceVdc announceVDC =
-                message.getVdcSendAnnounceVdc().toBuilder().setDSUID(this.dSUID.toString()).build();
+                message.getVdcSendAnnounceVdc().toBuilder().setDSUID(getDSUID().toString()).build();
         message.setVdcSendAnnounceVdc(announceVDC);
 
-        log.info("announce() -- vDC '{}' ({})", this.name, this.getDSUID());
+        log.info("announce() -- vDC '{}' ({})", getModel(), this.getDSUID());
         host.send(message.build(), this::announceCB );
     }
 
     public abstract void announceCB(Messages.GenericResponse response);
 
     /**
-     * informs the connected vdSM that the given {@link DsAddressable} has vanished from this vDC
+     * informs the connected vdSM that the given {@link Addressable} has vanished from this vDC
      * @param device
      */
-    public void vanish(DsAddressable device) {
+    public void vanish(Addressable device) {
         Messages.Message.Builder message = Messages.Message.newBuilder();
         message.setType(Messages.Type.VDC_SEND_VANISH);
 

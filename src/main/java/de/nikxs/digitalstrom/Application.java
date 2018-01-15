@@ -60,6 +60,6 @@ public class Application implements CommandLineRunner {
 
     @Bean
     public static MyTestVdc getMyTestVdc() {
-        return new MyTestVdc("myTestVDC", DSUID.fromDSUID("9888dd3db3454109b088777777777700"));
+        return new MyTestVdc(DSUID.fromDSUID("9888dd3db3454109b088777777777700"), "myTestVDC");
     }
 }

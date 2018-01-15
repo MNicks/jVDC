@@ -10,8 +10,8 @@ public class MyTestVdc extends Vdc {
         super(name);
     }
 
-    public MyTestVdc(String name, DSUID dsuid) {
-        super(name, dsuid);
+    public MyTestVdc(DSUID dsuid, String name) {
+        super(dsuid, name);
     }
 
     @Override
