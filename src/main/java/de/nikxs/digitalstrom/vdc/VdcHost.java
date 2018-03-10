@@ -37,6 +37,8 @@ public class VdcHost implements Addressable {
 
     private static final DSUID DEFAULT_HOST_DSUID = DSUID.fromDSUID("6123A881016010000000F2CA0DEB370700");
 
+    private static final int VDC_USER_PROTOBUF_MESSAGE_LENGTH = 63*1024; //allow 63kB for User Protobuf messages
+
     private static final int SUPPORTED_API_VERSION = 3;
     private static final int RESERVED_REQUEST_ID = 0;
 

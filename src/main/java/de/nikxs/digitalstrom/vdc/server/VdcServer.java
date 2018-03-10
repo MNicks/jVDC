@@ -102,6 +102,7 @@ public class VdcServer {
      * initializing and starting vDC Server
      */
     public void start(VdcHost vDCHost) throws InterruptedException {
+
         try {
             log.info("Starting vDC Server...");
             if (port == 0) {
@@ -126,11 +127,11 @@ public class VdcServer {
                     ch.pipeline().addLast("grouper", new ChannelInboundHandlerAdapter() {
                         @Override
                         public void channelActive(ChannelHandlerContext ctx) throws Exception {
-                            Channel channel = ctx.channel();
 
+                            Channel channel = ctx.channel();
+                            channel.pipeline().addLast(new PbrpcClientHandler());
                             channel.pipeline().addLast(new VdcMessageSerializer());
                             channel.pipeline().addLast(new PbrpcMessageDeserializer());
-                            channel.pipeline().addLast(new PbrpcClientHandler());
 
                             channel.pipeline().addLast("yourHandlerName", new SimpleChannelInboundHandler() {
                                 public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
@@ -139,36 +140,28 @@ public class VdcServer {
                                     // do logic
                                 }
                             });
-                            channel.pipeline().addLast("discoveryServer", new SimpleChannelUpstreamHandler()
-                            {
+                            channel.pipeline().addLast("discoveryServer", new SimpleChannelUpstreamHandler() {
 
                                 @Override
-                                public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception
-                                {
-                                    try
-                                    {
+                                public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws Exception {
+                                    try {
                                         String response = getStringMessage(e);
                                         if (response == null)
                                             return;
                                         String[] resp = response.split(":");
-                                        if (resp.length == 2)
-                                        {
+                                        if (resp.length == 2) {
                                             String host = resp[0];
                                             InetAddress.getByName(host);
                                             int port = Integer.parseInt(resp[1]);
-                                            if (!hosts.contains(response))
-                                            {
+                                            if (!hosts.contains(response)) {
                                                 hosts.add(response);
-                                                for (DiscoveryListener listener : listeners)
-                                                {
+                                                for (DiscoveryListener listener : listeners) {
                                                     listener.newHost(name, response);
                                                 }
                                             }
 
                                         }
-                                    }
-                                    catch (Exception ex)
-                                    {
+                                    } catch (Exception ex) {
                                         Constants.ahessianLogger.warn("", ex);
                                     }
                                 }
